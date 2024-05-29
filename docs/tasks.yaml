@@ -1,0 +1,30 @@
+Timer:
+  - Countdown:
+    - Count down
+
+  - Button Control:
+    - Start/Pause/Resume -- Single button presses
+    - Reset
+
+  - Knob Control:
+    - Increase/Decrease time -- Clockwise/Counter-clockwise rotation
+
+
+    State Machine:
+      - Countdown:
+        - Start
+        - Pause
+        - Resume
+        - Reset
+        - Time Up
+
+      - Idle:
+        - Start
+
+      - Paused:
+        - Resume
+        - Reset
+
+      - Time Up:
+        - Reset
+    

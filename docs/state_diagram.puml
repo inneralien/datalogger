@@ -1,0 +1,4 @@
+@startuml
+[*] --> Reset
+Reset --> Countdown : Button Pressed
+@enduml

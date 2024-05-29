@@ -1,0 +1,12 @@
+[target.'cfg(all(target_arch = "arm", target_os = "none"))']
+# replace STM32F429ZITx with your chip as listed in `probe-rs chip list`
+# Nucleo
+#runner = "probe-rs run --chip STM32F411RETx"
+# Discovery
+runner = "probe-rs run --chip STM32F429ZITx"
+
+[build]
+target = "thumbv7em-none-eabi"
+
+[env]
+DEFMT_LOG = "trace"
