@@ -340,7 +340,7 @@ dependencies = [
 
 [[package]]
 name = "embassy-sync"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "cfg-if",
  "critical-section",
@@ -952,7 +952,7 @@ dependencies = [
 [[package]]
 name = "stm32-metapac"
 version = "15.0.0"
-source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-f1297385e91f061fcb6134bb25f51e12d8abff93#acfef07196084706a9621a434d927229b616951f"
+source = "git+https://github.com/embassy-rs/stm32-data-generated?tag=stm32-data-34c0188a682b32c32ff147d377e0629b1ebe8318#0c9dd0fa56c7303782ae62142cd9d35366ddc558"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",
