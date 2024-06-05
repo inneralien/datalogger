@@ -69,10 +69,16 @@ async fn main(spawner: Spawner) {
 
     // Spawn background tasks
     spawner
-        .spawn(button_task(p.PC13.degrade(), p.EXTI13.degrade()))
+        // Nucleo
+        // .spawn(button_task(p.PC13.degrade(), p.EXTI13.degrade()))
+        // Discovery
+        .spawn(button_task(p.PA0.degrade(), p.EXTI0.degrade()))
         .unwrap();
     spawner.spawn(pomo_timer_task()).unwrap();
-    spawner.spawn(heartbeat_task(p.PA5.degrade())).unwrap();
+    // Nucleo
+    // spawner.spawn(heartbeat_task(p.PA5.degrade())).unwrap();
+    // Discovery
+    spawner.spawn(heartbeat_task(p.PG13.degrade())).unwrap();
 
     // Main event loop
     loop {
@@ -138,9 +144,15 @@ async fn button_task(pin: AnyPin, exti_chan: AnyChannel) {
     let mut button = ExtiInput::new(pin, exti_chan, Pull::Down);
     // Do we need to debounce or is that done by Embassy?
     loop {
-        button.wait_for_falling_edge().await;
+        // Nucleo
+        // button.wait_for_falling_edge().await;
+        // Discovery
+        button.wait_for_rising_edge().await;
         info!("FALLING EDGE");
-        match with_timeout(Duration::from_millis(2000), button.wait_for_rising_edge()).await {
+        // Nucleo
+        // match with_timeout(Duration::from_millis(2000), button.wait_for_rising_edge()).await {
+        // Discovery
+        match with_timeout(Duration::from_millis(2000), button.wait_for_falling_edge()).await {
             Ok(_) => {
                 BUTTON_SIGNAL.signal(ButtonEvent::ShortPress);
             }
