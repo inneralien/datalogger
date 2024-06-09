@@ -1,4 +1,18 @@
-# Pomodoro Repo
+# Datalogger Repo
+
+This repo contains more experimentation with Embassy embedded crates. The high-level
+goal is to have a microcontroller that collects data and an application
+running on a PC that can interface with the microcontroller to control 
+aspects of the collection process as well as grab, store, and display data.
+
+```
+┌───────────┐                            ┌───────┬─────────┬─┐
+│Temperature│   I2C    ┌──────┐    USB   │       │Real-Time│ │
+│Pressure   │◀────────▶│MCU   │◀───┐     │Mac    │   TUI   │ │
+│Humidity   │          └──────┘    └────▶│       └─────────┘ │
+└───────────┘                            │                   │
+                                         └───────────────────┘
+```
 
 ## Quick Start
 
