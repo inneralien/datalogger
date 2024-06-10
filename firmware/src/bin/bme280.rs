@@ -58,57 +58,36 @@ static TEMP_CALIB: OnceLock<[i16; 3]> = OnceLock::new();
 struct RawTemp([u8; 3]);
 
 impl RawTemp {
+    /// Convert the raw temperature data to a signed 32-bit integer in 100ths of a Degress Celsius
+    ///
+    /// For example, a value of 2000 would be 20.00 degrees Celsius.
+    /// To convert to degrees Celsius simply, divide by 100.0
+    /// To convert to Fahrenheit, `F = C * 1.8 + 32`
     async fn as_i32(&self) -> i32 {
         // _read24() equivalent from Python lib
         // https://github.com/adafruit/Adafruit_CircuitPython_BME280/blob/0baf6d0373b94974793b4c34dec7f7e4279ed9ab/adafruit_bme280/basic.py#L305
-        // let folded = self.0.iter().fold(0.0, |acc, e| acc * 256.0 + (*e as f32));
-        // debug!("vals: {}", self.0);
         let folded = self.0.iter().fold(0_i32, |acc, e| acc * 256 + (*e as i32));
-        // debug!("folded: {}", folded);
-        // /16
+        // Divide by 16 by shifting
         let adc_t = folded >> 4;
-        // let adc_t =
-        // u32::from(self.0[0]) << 12 | u32::from(self.0[1]) << 4 | u32::from(self.0[2]) >> 4;
-        // debug!("adc_t: {}", adc_t);
-
-        let temp_calib = TEMP_CALIB.get().await;
-        // debug!("temp_calib[0]: {}", temp_calib[0]);
-        // debug!("temp_calib[1]: {}", temp_calib[1]);
-        // debug!("temp_calib[2]: {}", temp_calib[2]);
-
-        let adc_t_div_14 = adc_t >> 14;
-        let adc_t_div_17 = adc_t >> 17;
-        // 2^14
-        // debug!(
-        //     "adc_t >> 3: {}   adc_t / 16384: {}",
-        //     adc_t >> 14,
-        //     (adc_t as i32) / 16384
-        // );
-        // debug!("temp_calib[0] << 1: {}", (temp_calib[0] as i32) << 1);
-        // debug!("temp_calib[1]: {}", temp_calib[1] as i32);
-
-        // debug!("adc_t / 16384: {}", (adc_t as i32) / 16384);
-        let ref_var1 =
-            ((adc_t as i32) / 16384 - (temp_calib[0] as i32) / 1024) * (temp_calib[1] as i32);
-        let var1 = (((adc_t >> 3) - ((temp_calib[0] as i32) << 1)) * (temp_calib[1] as i32)) >> 11;
-        // debug!("var1: {}", var1 as f32);
-        // debug!("ref_var1: {}", ref_var1);
-        let var2 = ((((adc_t >> 4) - (temp_calib[0] as i32))
-            * ((adc_t >> 4) - (temp_calib[0] as i32)))
-            >> 12)
-            * (temp_calib[2] as i32)
-            >> 14;
-        // 2^17
-        // let var2 = (((adc_t as i32) / 131072) - temp_calib[0] as i32 / 8192)
-        // * ((adc_t as i32) / 131072 - temp_calib[0] as i32 / 8192)
-        // * temp_calib[2] as i32;
-        // debug!("var2: {}", var2);
-
-        let t_fine = var1 + var2;
-        // debug!("t_fine: {}", t_fine);
-        //        (t_fine as i32) / 5120.0
-        let degrees_c = (t_fine * 5 + 128) >> 8;
-        // debug!("degrees_c: {}", degrees_c);
+        let mut degrees_c = 0;
+        // Get the static calibration data
+        if !TEMP_CALIB.is_set() {
+            error!(
+                "Calling `as_i32` before calibration coefficients have been read will never work."
+            );
+        } else {
+            let temp_calib = TEMP_CALIB.get().await;
+            // These equations are taken from the BME280 datasheet
+            let var1 =
+                (((adc_t >> 3) - ((temp_calib[0] as i32) << 1)) * (temp_calib[1] as i32)) >> 11;
+            let var2 = ((((adc_t >> 4) - (temp_calib[0] as i32))
+                * ((adc_t >> 4) - (temp_calib[0] as i32)))
+                >> 12)
+                * (temp_calib[2] as i32)
+                >> 14;
+            let t_fine = var1 + var2;
+            degrees_c = (t_fine * 5 + 128) >> 8;
+        }
         degrees_c
     }
 }
@@ -197,16 +176,11 @@ impl<'a> Bme280I2c<'a> {
         let mut data = [0u8; 24];
         self.i2c
             .blocking_write_read(BME280_ADDRESS, &[0x88], &mut data)?;
-        // debug!("Calibration Coefficients: {:x}", data);
-        let values = unpack_bytes(&data);
+        let values = unpack_coefficient_bytes(&data);
         debug!("Calibration Coefficients: {:#?}", values);
         if let Err(e) = TEMP_CALIB.init(values) {
-            error!(
-                ">>> ERROR INITIALIZING CALIBRATION COEFFICIENTS: {:?} <<<",
-                e
-            );
+            error!("Calibration Coefficients have already been set: {:?}", e);
         };
-        //        self.temp_calib = Some(values);
         Ok(self)
     }
 
@@ -217,38 +191,21 @@ impl<'a> Bme280I2c<'a> {
         Ok(data[0])
     }
 
+    /// Read out just the temperature from the sensor
+    ///
+    /// TODO: For some reason the very first read after reset is  always the
+    /// default value:
+    /// RAW Bytes        | C i32    | C f32 | F f32
+    /// [0x80, 0x0, 0x0] | 2030_i32 | 20.3C | 68.53999F
     async fn read_temperature(&mut self) -> Result<&mut Self, Error> {
-        // def _read_temperature(self) -> None:
-        // # perform one measurement
-        // if self.mode != MODE_NORMAL:
-        //     self.mode = MODE_FORCE
-        //     # Wait for conversion to complete
-        //     while self._get_status() & 0x08:
-        //         sleep(0.002)
-        // raw_temperature = (
-        //     self._read24(_BME280_REGISTER_TEMPDATA) / 16
-        // )  # lowest 4 bits get dropped
-        //
-        // var1 = (
-        //     raw_temperature / 16384.0 - self._temp_calib[0] / 1024.0
-        // ) * self._temp_calib[1]
-        //
-        // var2 = (
-        //     (raw_temperature / 131072.0 - self._temp_calib[0] / 8192.0)
-        //     * (raw_temperature / 131072.0 - self._temp_calib[0] / 8192.0)
-        // ) * self._temp_calib[2]
-        //
-        // self._t_fine = int(var1 + var2)
-
         // Set mode to force
         self.set_mode(Mode::Force)?;
         // Wait for conversion to complete
-        // debug!("Waiting for conversion to complete");
         while self.get_status().await? & 0x08 != 0 {
-            // debug!("in while loop");
+            // The datasheet says to wait 2ms
             Timer::after(Duration::from_millis(2)).await;
         }
-        debug!("Conversion complete");
+        trace!("Conversion complete");
 
         let mut raw_temp = RawTemp([0u8; 3]);
         self.i2c.blocking_write_read(
@@ -256,26 +213,21 @@ impl<'a> Bme280I2c<'a> {
             &[BME280_REGISTER_TEMPDATA],
             &mut raw_temp.0,
         )?;
-        let value = raw_temp.as_i32().await;
+
+        let degrees_milli_c = raw_temp.as_i32().await;
         info!(
-            "Temp {} raw   {}C  {}F",
+            "Temp raw {} {}_i32 {}C  {}F",
             &raw_temp,
-            (value as f32) * 0.01,
-            (value as f32) * 0.01 * 1.8 + 32.0
+            degrees_milli_c,
+            (degrees_milli_c as f32) * 0.01,
+            (degrees_milli_c as f32) * 0.01 * 1.8 + 32.0
         );
-        // let a = raw_temp.iter().fold(0.0, |acc, e| acc * 256.0 + e);
 
         Ok(self)
     }
 }
 
-fn unpack_bytes(bytes: &[u8]) -> [i16; 3] {
-    // let mut values = Vec::new();
-    //
-    // values.push(u16::from_le_bytes([bytes[0], bytes[1]]) as i16)?;
-    // values.push(i16::from_le_bytes([bytes[2], bytes[3]]))?;
-    // values.push(i16::from_le_bytes([bytes[4], bytes[5]]))?;
-
+fn unpack_coefficient_bytes(bytes: &[u8]) -> [i16; 3] {
     [
         u16::from_le_bytes([bytes[0], bytes[1]]) as i16,
         i16::from_le_bytes([bytes[2], bytes[3]]),
@@ -319,12 +271,14 @@ async fn main(_spawner: Spawner) {
     }
 
     // Read Calibration Coefficients
-    match bme.read_calibration_coeffs().await {
-        Ok(_) => {
-            info!("\nCalibration Coefficients")
+    for _ in 0..2 {
+        match bme.read_calibration_coeffs().await {
+            Ok(_) => {
+                info!("\nCalibration Coefficients")
+            }
+            Err(Error::Timeout) => error!("Operation timed out"),
+            Err(e) => error!("I2c Error: {:?}", e),
         }
-        Err(Error::Timeout) => error!("Operation timed out"),
-        Err(e) => error!("I2c Error: {:?}", e),
     }
 
     // Read out Config
@@ -393,19 +347,3 @@ async fn main(_spawner: Spawner) {
 //         humidity,
 //     })
 // }
-
-// Unit tests
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_from_raw_temp() {
-        let mut raw_temp = RawTemp([0u8; 3]);
-        raw_temp.0[0] = 0x86;
-        raw_temp.0[1] = 0x19;
-        raw_temp.0[2] = 0x00;
-
-        assert_eq!(raw_temp.as_i32(), 28.0);
-    }
-}
