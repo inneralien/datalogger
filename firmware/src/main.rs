@@ -1,17 +1,28 @@
 #![no_std]
 #![no_main]
 
+use core::any::Any;
+use core::borrow::BorrowMut;
 use core::sync::atomic::AtomicU32;
-
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_stm32::exti::{AnyChannel, Channel, ExtiInput};
 use embassy_stm32::gpio::{AnyPin, Level, Output, Pin, Pull, Speed};
-use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, ThreadModeRawMutex};
+use embassy_stm32::i2c::I2c;
+use embassy_stm32::mode::Blocking;
+use embassy_stm32::peripherals::I2C3;
+use embassy_stm32::time::Hertz;
+use embassy_sync::blocking_mutex::raw::{
+    CriticalSectionRawMutex, NoopRawMutex, ThreadModeRawMutex,
+};
+use embassy_sync::channel::Channel as MessageChannel;
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
-use embassy_time::{with_timeout, Duration, Ticker};
+use embassy_time::{with_timeout, Duration, Ticker, Timer};
+use firmware::bme280::bme280::Bme280I2c;
 use {defmt_rtt as _, panic_probe as _};
+
+use firmware::bme280::{BME280I2c, BME280Message, ControlSignal};
 
 /// Global state
 /// The countdown itself
@@ -20,6 +31,12 @@ static COUNTDOWN: AtomicU32 = AtomicU32::new(0);
 static BUTTON_SIGNAL: Signal<CriticalSectionRawMutex, ButtonEvent> = Signal::new();
 /// The state of the timer, which is only updated by the button press handler
 static TIMER_STATE: Mutex<ThreadModeRawMutex, TimerState> = Mutex::new(TimerState::Reset);
+/// Channels for communicating with the BME280 task
+/// Data channel
+static BME280_DATA_CHANNEL: MessageChannel<ThreadModeRawMutex, BME280Message, 2> =
+    MessageChannel::new();
+/// Control channel
+static BME280_CONTROL_SIGNAL: Signal<CriticalSectionRawMutex, ControlSignal> = Signal::new();
 
 #[derive(Debug, Format)]
 enum TimerState {
@@ -62,9 +79,7 @@ enum ButtonEvent {
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    info!("Hello Pomodoro-AF!");
     let p = embassy_stm32::init(Default::default());
-
     // TODO -- Get previous state of the system from non-volitile memory
 
     // Spawn background tasks
@@ -79,6 +94,9 @@ async fn main(spawner: Spawner) {
     // spawner.spawn(heartbeat_task(p.PA5.degrade())).unwrap();
     // Discovery
     spawner.spawn(heartbeat_task(p.PG13.degrade())).unwrap();
+
+    let i2c = I2c::new_blocking(p.I2C3, p.PA8, p.PC9, Hertz(100_000), Default::default());
+    spawner.spawn(bme280_task(i2c)).unwrap();
 
     // Main event loop
     loop {
@@ -126,7 +144,7 @@ async fn heartbeat_task(pin: AnyPin) {
     let mut ticker = Ticker::every(Duration::from_millis(500));
     loop {
         led.toggle();
-        info!(
+        debug!(
             "countdown: {}",
             COUNTDOWN.load(core::sync::atomic::Ordering::Relaxed)
         );
@@ -148,7 +166,7 @@ async fn button_task(pin: AnyPin, exti_chan: AnyChannel) {
         // button.wait_for_falling_edge().await;
         // Discovery
         button.wait_for_rising_edge().await;
-        info!("FALLING EDGE");
+        debug!("FALLING EDGE");
         // Nucleo
         // match with_timeout(Duration::from_millis(2000), button.wait_for_rising_edge()).await {
         // Discovery
@@ -161,4 +179,20 @@ async fn button_task(pin: AnyPin, exti_chan: AnyChannel) {
             }
         };
     }
+}
+
+#[embassy_executor::task]
+async fn bme280_task(i2c: I2c<'static, Blocking>) {
+    if let Ok(mut bme) = Bme280I2c::new(i2c).init().await {
+        loop {
+            if let Ok(temperature) = bme.read_temperature().await {
+                info!("Temperature: {} C", temperature);
+            } else {
+                error!("Error reading temperature");
+            }
+            Timer::after(embassy_time::Duration::from_millis(1000)).await;
+        }
+    } else {
+        error!("Error initializing BME280");
+    };
 }
